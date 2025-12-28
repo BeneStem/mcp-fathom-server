@@ -137,4 +137,6 @@ If you encounter any issues:
 
 ---
 
+**Status**: Tested and working with GitHub integration ✓
+
 Built for fun by [@petesena](https://twitter.com/petesena) ❤️
