@@ -1,23 +1,34 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
-import { FathomListMeetingsParams, FathomListMeetingsResponse, FathomMeeting } from './types.js';
+import {
+  FathomListMeetingsParams,
+  FathomListMeetingsResponse,
+  FathomMeeting,
+  FathomSummaryResponse,
+  FathomTranscriptResponse,
+  FathomTeam,
+  FathomTeamMember,
+  FathomWebhook,
+  FathomTeamsResponse,
+  FathomTeamMembersResponse
+} from './types.js';
+import { FATHOM_API_BASE_URL, FATHOM_API_TIMEOUT, DEFAULT_TRANSCRIPT_SEARCH_LIMIT } from './constants.js';
+import { withRetry, isRateLimitError, getDefaultLookbackDate } from './utils/index.js';
 
 export class FathomClient {
   private client: AxiosInstance;
-  private apiKey: string;
 
   constructor(apiKey: string) {
     if (!apiKey) {
       throw new Error('Fathom API key is required');
     }
-    
-    this.apiKey = apiKey;
+
     this.client = axios.create({
-      baseURL: 'https://api.fathom.ai/external/v1',
+      baseURL: FATHOM_API_BASE_URL,
       headers: {
         'X-Api-Key': apiKey,
         'Content-Type': 'application/json'
       },
-      timeout: 30000
+      timeout: FATHOM_API_TIMEOUT
     });
   }
 
@@ -26,54 +37,190 @@ export class FathomClient {
       const response = await this.client.get<FathomListMeetingsResponse>('/meetings', {
         params: this.formatParams(params)
       });
-      
       return response.data;
     } catch (error) {
       throw this.handleError(error);
     }
   }
 
-  async searchMeetings(searchTerm: string, includeTranscript: boolean = false): Promise<FathomMeeting[]> {
-    // For now, just get recent meetings without transcripts for performance
-    // Transcripts can make responses over 1MB which is too slow
-    const response = await this.listMeetings({
-      include_transcript: false,
-      created_after: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString() // Last 30 days
-    });
-    
-    const searchLower = searchTerm.toLowerCase();
-    const filteredMeetings = response.items.filter(meeting => {
-      const titleMatch = meeting.title?.toLowerCase().includes(searchLower) || 
-                        meeting.meeting_title?.toLowerCase().includes(searchLower);
-      const summaryMatch = meeting.default_summary?.toLowerCase().includes(searchLower);
-      const actionItemsMatch = meeting.action_items?.some(item => 
-        typeof item === 'string' && item.toLowerCase().includes(searchLower)
-      );
-      
-      return titleMatch || summaryMatch || actionItemsMatch;
-    });
-    
-    // If we need transcripts, fetch them individually for just the matching meetings
-    if (includeTranscript && filteredMeetings.length > 0 && filteredMeetings.length <= 5) {
-      // Only fetch transcripts for up to 5 meetings to avoid timeouts
-      console.error(`Fetching transcripts for ${filteredMeetings.length} meetings...`);
-      // Note: This would require individual meeting fetch API which Fathom doesn't seem to provide
-      // So we'll return without transcripts for now
+  async listMeetingsWithLimit(params?: FathomListMeetingsParams, maxItems: number = 50): Promise<FathomMeeting[]> {
+    const items: FathomMeeting[] = [];
+    let cursor: string | undefined = params?.cursor;
+
+    do {
+      const response = await this.listMeetings({ ...params, cursor });
+      items.push(...response.items);
+      cursor = response.next_cursor ?? undefined;
+    } while (cursor && items.length < maxItems);
+
+    return items.slice(0, maxItems);
+  }
+
+  async getMeetingSummary(recordingId: number): Promise<FathomSummaryResponse> {
+    try {
+      const response = await this.client.get<FathomSummaryResponse>(`/recordings/${recordingId}/summary`);
+      return response.data;
+    } catch (error) {
+      throw this.handleError(error);
     }
-    
-    return filteredMeetings;
+  }
+
+  async getMeetingTranscript(recordingId: number): Promise<FathomTranscriptResponse> {
+    try {
+      const response = await this.client.get<FathomTranscriptResponse>(`/recordings/${recordingId}/transcript`);
+      return response.data;
+    } catch (error) {
+      throw this.handleError(error);
+    }
+  }
+
+  async searchMeetings(params: {
+    searchTerm: string;
+    searchSummary?: boolean;
+    searchActionItems?: boolean;
+    searchTranscript?: boolean;
+    transcriptSearchLimit?: number;
+    returnSummary?: boolean;
+    returnActionItems?: boolean;
+    returnTranscript?: boolean;
+    returnCrmMatches?: boolean;
+    createdAfter?: string;
+    createdBefore?: string;
+    calendarInvitees?: string[];
+    calendarInviteesDomains?: string[];
+    calendarInviteesDomainsType?: 'all' | 'only_internal' | 'one_or_more_external';
+    recordedBy?: string[];
+    teams?: string[];
+    limit?: number;
+  }): Promise<FathomMeeting[]> {
+    const {
+      searchTerm,
+      searchSummary = false,
+      searchActionItems = false,
+      searchTranscript = false,
+      transcriptSearchLimit = DEFAULT_TRANSCRIPT_SEARCH_LIMIT,
+      returnSummary = false,
+      returnActionItems = false,
+      returnTranscript = false,
+      returnCrmMatches = false,
+      createdAfter,
+      createdBefore,
+      calendarInvitees,
+      calendarInviteesDomains,
+      calendarInviteesDomainsType,
+      recordedBy,
+      teams,
+      limit = 50
+    } = params;
+
+    const response = await this.listMeetings({
+      include_summary: searchSummary || returnSummary,
+      include_action_items: searchActionItems || returnActionItems,
+      include_transcript: searchTranscript || returnTranscript,
+      include_crm_matches: returnCrmMatches,
+      created_after: createdAfter || getDefaultLookbackDate(),
+      created_before: createdBefore,
+      calendar_invitees: calendarInvitees,
+      calendar_invitees_domains: calendarInviteesDomains,
+      calendar_invitees_domains_type: calendarInviteesDomainsType,
+      recorded_by: recordedBy,
+      teams: teams
+    });
+
+    const searchLower = searchTerm.toLowerCase();
+
+    const meetingsToSearch = searchTranscript
+      ? response.items.slice(0, transcriptSearchLimit)
+      : response.items;
+
+    if (searchTranscript && response.items.length > transcriptSearchLimit) {
+      console.error(`[searchMeetings] Limiting transcript search to ${transcriptSearchLimit} meetings (had ${response.items.length})`);
+    }
+
+    const filteredMeetings = meetingsToSearch.filter(meeting => {
+      const titleMatch = meeting.title?.toLowerCase().includes(searchLower) ||
+                        meeting.meeting_title?.toLowerCase().includes(searchLower);
+
+      const summaryMatch = searchSummary &&
+        meeting.default_summary?.markdown_formatted?.toLowerCase().includes(searchLower);
+
+      const actionItemsMatch = searchActionItems &&
+        meeting.action_items?.some(item => item.description?.toLowerCase().includes(searchLower));
+
+      const transcriptMatch = searchTranscript &&
+        meeting.transcript?.some(entry => entry.text?.toLowerCase().includes(searchLower));
+
+      return titleMatch || summaryMatch || actionItemsMatch || transcriptMatch;
+    });
+
+    return filteredMeetings.slice(0, limit);
+  }
+
+  async listTeams(): Promise<FathomTeam[]> {
+    try {
+      const response = await withRetry(
+        () => this.client.get<FathomTeamsResponse>('/teams'),
+        { shouldRetry: isRateLimitError }
+      );
+      return response.data.items ?? response.data.teams ?? [];
+    } catch (error) {
+      throw this.handleError(error);
+    }
+  }
+
+  async listTeamMembers(team?: string): Promise<FathomTeamMember[]> {
+    try {
+      const params = team ? { team } : {};
+      const response = await withRetry(
+        () => this.client.get<FathomTeamMembersResponse>('/team_members', { params }),
+        { shouldRetry: isRateLimitError }
+      );
+      return response.data.items ?? response.data.members ?? [];
+    } catch (error) {
+      throw this.handleError(error);
+    }
+  }
+
+  async createWebhook(params: {
+    url: string;
+    include_transcript: boolean;
+    include_summary: boolean;
+    include_action_items: boolean;
+    include_crm_matches: boolean;
+    triggered_for?: 'own' | 'shared' | 'both';
+  }): Promise<FathomWebhook> {
+    try {
+      const response = await withRetry(
+        () => this.client.post<FathomWebhook>('/webhooks', params),
+        { shouldRetry: isRateLimitError }
+      );
+      return response.data;
+    } catch (error) {
+      throw this.handleError(error);
+    }
+  }
+
+  async deleteWebhook(webhookId: string): Promise<void> {
+    try {
+      await withRetry(
+        () => this.client.delete(`/webhooks/${webhookId}`),
+        { shouldRetry: isRateLimitError }
+      );
+    } catch (error) {
+      throw this.handleError(error);
+    }
   }
 
   private formatParams(params?: FathomListMeetingsParams): Record<string, any> {
     if (!params) return {};
-    
+
     const formatted: Record<string, any> = {};
-    
+
     if (params.calendar_invitees?.length) {
       formatted['calendar_invitees[]'] = params.calendar_invitees;
     }
     if (params.calendar_invitees_domains?.length) {
-      formatted['calendar_invitees_domains[]'] = params.calendar_invitees_domains;
+      formatted['calendar_invitees_domains[]'] = params.calendar_invitees_domains.map(d => d.toLowerCase());
     }
     if (params.recorded_by?.length) {
       formatted['recorded_by[]'] = params.recorded_by;
@@ -81,13 +228,14 @@ export class FathomClient {
     if (params.teams?.length) {
       formatted['teams[]'] = params.teams;
     }
-    
+
+    const arrayParams = ['calendar_invitees', 'calendar_invitees_domains', 'recorded_by', 'teams'];
     Object.entries(params).forEach(([key, value]) => {
-      if (!key.includes('calendar_invitees') && !key.includes('recorded_by') && !key.includes('teams') && value !== undefined) {
+      if (!arrayParams.includes(key) && value !== undefined) {
         formatted[key] = value;
       }
     });
-    
+
     return formatted;
   }
 
@@ -103,7 +251,7 @@ export class FathomClient {
         return new Error(`Fathom API error: ${error.response.data.message}`);
       }
     }
-    
+
     return error instanceof Error ? error : new Error('Unknown error occurred');
   }
 }
