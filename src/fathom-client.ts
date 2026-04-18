@@ -43,17 +43,26 @@ export class FathomClient {
     }
   }
 
-  async listMeetingsWithLimit(params?: FathomListMeetingsParams, maxItems: number = 50): Promise<FathomMeeting[]> {
+  async listMeetingsWithLimit(
+    params?: FathomListMeetingsParams,
+    maxItems: number = 50
+  ): Promise<{ items: FathomMeeting[]; next_cursor: string | null }> {
     const items: FathomMeeting[] = [];
     let cursor: string | undefined = params?.cursor;
+    let lastCursor: string | null = null;
 
     do {
       const response = await this.listMeetings({ ...params, cursor });
       items.push(...response.items);
+      lastCursor = response.next_cursor;
       cursor = response.next_cursor ?? undefined;
     } while (cursor && items.length < maxItems);
 
-    return items.slice(0, maxItems);
+    const truncated = items.length > maxItems;
+    return {
+      items: items.slice(0, maxItems),
+      next_cursor: truncated || cursor ? lastCursor : null
+    };
   }
 
   async getMeetingSummary(recordingId: number): Promise<FathomSummaryResponse> {
@@ -92,10 +101,11 @@ export class FathomClient {
     recordedBy?: string[];
     teams?: string[];
     limit?: number;
-  }): Promise<FathomMeeting[]> {
+    scanLimit?: number;
+  }): Promise<{ items: FathomMeeting[]; scanned: number; total_pulled: number }> {
     const {
       searchTerm,
-      searchSummary = false,
+      searchSummary = true,
       searchActionItems = false,
       searchTranscript = false,
       transcriptSearchLimit = DEFAULT_TRANSCRIPT_SEARCH_LIMIT,
@@ -110,10 +120,11 @@ export class FathomClient {
       calendarInviteesDomainsType,
       recordedBy,
       teams,
-      limit = 50
+      limit = 50,
+      scanLimit = 250
     } = params;
 
-    const response = await this.listMeetings({
+    const response = await this.listMeetingsWithLimit({
       include_summary: searchSummary || returnSummary,
       include_action_items: searchActionItems || returnActionItems,
       include_transcript: searchTranscript || returnTranscript,
@@ -125,9 +136,12 @@ export class FathomClient {
       calendar_invitees_domains_type: calendarInviteesDomainsType,
       recorded_by: recordedBy,
       teams: teams
-    });
+    }, scanLimit);
 
-    const searchLower = searchTerm.toLowerCase();
+    const queryWords = searchTerm
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(w => w.length > 0);
 
     const meetingsToSearch = searchTranscript
       ? response.items.slice(0, transcriptSearchLimit)
@@ -137,23 +151,37 @@ export class FathomClient {
       console.error(`[searchMeetings] Limiting transcript search to ${transcriptSearchLimit} meetings (had ${response.items.length})`);
     }
 
+    const matchesAllWords = (haystack: string | null | undefined): boolean => {
+      if (!haystack) return false;
+      const hay = haystack.toLowerCase();
+      return queryWords.every(w => hay.includes(w));
+    };
+
     const filteredMeetings = meetingsToSearch.filter(meeting => {
-      const titleMatch = meeting.title?.toLowerCase().includes(searchLower) ||
-                        meeting.meeting_title?.toLowerCase().includes(searchLower);
+      if (matchesAllWords(meeting.title) || matchesAllWords(meeting.meeting_title)) {
+        return true;
+      }
 
-      const summaryMatch = searchSummary &&
-        meeting.default_summary?.markdown_formatted?.toLowerCase().includes(searchLower);
+      if (searchSummary && matchesAllWords(meeting.default_summary?.markdown_formatted)) {
+        return true;
+      }
 
-      const actionItemsMatch = searchActionItems &&
-        meeting.action_items?.some(item => item.description?.toLowerCase().includes(searchLower));
+      if (searchActionItems && meeting.action_items?.some(item => matchesAllWords(item.description))) {
+        return true;
+      }
 
-      const transcriptMatch = searchTranscript &&
-        meeting.transcript?.some(entry => entry.text?.toLowerCase().includes(searchLower));
+      if (searchTranscript && meeting.transcript?.some(entry => matchesAllWords(entry.text))) {
+        return true;
+      }
 
-      return titleMatch || summaryMatch || actionItemsMatch || transcriptMatch;
+      return false;
     });
 
-    return filteredMeetings.slice(0, limit);
+    return {
+      items: filteredMeetings.slice(0, limit),
+      scanned: meetingsToSearch.length,
+      total_pulled: response.items.length
+    };
   }
 
   async listTeams(): Promise<FathomTeam[]> {

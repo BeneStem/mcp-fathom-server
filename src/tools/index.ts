@@ -8,12 +8,14 @@ import {
   ListTeamsSchema,
   ListTeamMembersSchema,
   CreateWebhookSchema,
-  DeleteWebhookSchema
+  DeleteWebhookSchema,
+  FindPersonSchema
 } from './schemas.js';
 import { handleListMeetings, handleSearchMeetings } from './meetings.js';
 import { handleGetMeetingSummary, handleGetMeetingTranscript } from './recording.js';
 import { handleListTeams, handleListTeamMembers } from './teams.js';
 import { handleCreateWebhook, handleDeleteWebhook } from './webhooks.js';
+import { handleFindPerson } from './people.js';
 import { errorResponse } from '../utils/index.js';
 
 export const toolDefinitions = [
@@ -24,7 +26,7 @@ export const toolDefinitions = [
   },
   {
     name: "search_meetings",
-    description: "Search for meetings containing keywords. By default searches titles only. Use search_X params to extend search scope, and return_X params to control response fields. Use brief_mode=true for minimal token usage.",
+    description: "Search meeting titles + summaries by keyword. AND-logic: every word in search_term must appear (case-insensitive substring match). Scans up to max_pages × ~25 meetings (default ~250). Note: this is in-memory filtering on top of /meetings — there is no server-side full-text search in the Fathom API. Use search_action_items / search_transcript to extend scope. Use return_X params to control response fields.",
     inputSchema: zodToJsonSchema(SearchMeetingsSchema)
   },
   {
@@ -34,7 +36,7 @@ export const toolDefinitions = [
   },
   {
     name: "get_meeting_transcript",
-    description: "Get the full transcript for a specific meeting by recording_id. Use max_entries to limit transcript size.",
+    description: "Get the full transcript for a specific meeting by recording_id. Pass the meeting `url` (from list_meetings) to receive timestamped deep-links — each entry will include a clickable [MM:SS](url?timestamp=N) link to that moment in the recording. Use max_entries to limit transcript size.",
     inputSchema: zodToJsonSchema(GetMeetingTranscriptSchema)
   },
   {
@@ -46,6 +48,11 @@ export const toolDefinitions = [
     name: "list_team_members",
     description: "List team members. Optionally filter by team name. Use this to discover who can record meetings.",
     inputSchema: zodToJsonSchema(ListTeamMembersSchema)
+  },
+  {
+    name: "find_person",
+    description: "Find a person by name across (1) your team roster and (2) calendar invitees from your recent meetings. Returns name, email, team, and last meeting they appeared in. NOTE: this does NOT search the transcript-speaker index — people who appear only as transcript speakers (not on calendar invites, not on your team) will not be found. For that, use the official Fathom MCP server.",
+    inputSchema: zodToJsonSchema(FindPersonSchema)
   },
   {
     name: "create_webhook",
@@ -83,6 +90,9 @@ export async function handleToolCall(
 
       case "list_team_members":
         return await handleListTeamMembers(client, ListTeamMembersSchema.parse(args));
+
+      case "find_person":
+        return await handleFindPerson(client, FindPersonSchema.parse(args));
 
       case "create_webhook":
         return await handleCreateWebhook(client, CreateWebhookSchema.parse(args));

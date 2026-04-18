@@ -1,18 +1,30 @@
 # MCP Fathom Server
 
-An MCP (Model Context Protocol) server that integrates with Fathom AI's meeting API, enabling Claude to search and retrieve meeting information through natural language queries.
+An MCP (Model Context Protocol) server for the Fathom AI meeting API. Stdio transport, API-key auth, runs locally.
 
 ![MCP](https://img.shields.io/badge/MCP-Compatible-blue)
 ![Node.js](https://img.shields.io/badge/Node.js-18+-green)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue)
 
-## 🎯 Features
+## Why this server vs the official Fathom MCP
 
-- **🔍 Smart Search**: Natural language search across meeting titles, summaries, transcripts, and action items
-- **📋 List Meetings**: Retrieve meetings with various filters (attendees, date ranges, teams, etc.)
-- **📝 Transcript Support**: Optionally include full meeting transcripts in search results
-- **⚡ Real-time**: Direct integration with Fathom's API for up-to-date meeting data
-- **🛡️ Secure**: API key management through environment variables
+Fathom ships a hosted MCP at `https://api.fathom.ai/mcp` (OAuth, multi-tenant). This server is a self-hosted stdio alternative with intentional differences:
+
+**What this server does that the official one doesn't:**
+
+1. **Public share URLs.** Returns `share_url` (`fathom.video/share/...`) instead of the auth-gated `/calls/...` URL the official MCP exposes. Links you paste actually work for non-Fathom users.
+2. **Webhook lifecycle.** `create_webhook` and `delete_webhook` tools — the official MCP is read-only.
+3. **`list_team_members`.** Discover who's on each team, not just team names.
+4. **Inline batch fetching.** The official MCP cannot use `include_summary` / `include_transcript` on `list_meetings` (OAuth restriction documented in their OpenAPI spec) — it must make N+1 calls. This server's API-key auth lets you fetch up to 50 meetings + summaries in one call.
+5. **`include_crm_matches`.** Pull CRM contacts/companies/deals attached to meetings.
+6. **`date_range` shortcut.** Pass `'today'`, `'last_week'`, etc. instead of crafting ISO timestamps.
+7. **Custom server instructions.** Ships an `instructions` field that trains the agent on grounding rules, tool composition, and the `find_person` honesty caveat (below).
+
+**Honest limitation vs the official server:**
+
+- **`find_person` does NOT search the transcript-speaker index.** The official MCP can find people who appear only as transcript speakers; this server can only find people from your team roster (`list_team_members`) and calendar invitees from your recent meetings. For exhaustive person lookups across all transcripts, use the official Fathom MCP.
+
+**Scope:** The Fathom API key this server uses is **user-scoped**. Every tool returns only meetings you personally recorded. There is no `"anyone"` org-wide scope.
 
 ## 🚀 Quick Start
 
@@ -83,20 +95,17 @@ Claude will automatically choose the right tool and search method based on your 
 
 ## 🔧 Available Tools
 
-### `list_meetings`
-Retrieves meetings with optional filters:
-- `calendar_invitees`: Filter by attendee emails
-- `calendar_invitees_domains`: Filter by company domains
-- `created_after`/`created_before`: Date range filters
-- `meeting_type`: all, internal, or external
-- `include_transcript`: Include full transcripts
-- `recorded_by`: Filter by meeting owner
-- `teams`: Filter by team names
-
-### `search_meetings`
-Searches meetings by keywords:
-- `search_term`: The keyword/phrase to search for
-- `include_transcript`: Search within transcripts (slower but more comprehensive)
+| Tool | Purpose |
+|------|---------|
+| `list_meetings` | Filter meetings by date / attendees / teams / recorder. Optional inline summary, transcript, action items, CRM matches. Auto-paginates up to `response_limit` (default 50); returns `next_cursor` when more exist. |
+| `search_meetings` | AND-logic keyword search across titles + summaries (and optionally action items / transcripts). Scans up to `max_pages × 25` meetings (default ~250). Param: `query`. |
+| `get_meeting_summary` | AI summary for a `recording_id`. |
+| `get_meeting_transcript` | Full transcript for a `recording_id`. Pass `url` to receive `[MM:SS](url?timestamp=N)` deep-links per speaker segment. |
+| `list_teams` | Discover team names for filtering. |
+| `list_team_members` | Discover who's on each team. **Not in the official MCP.** |
+| `find_person` | Find a person across team roster + recent meeting invitees. **See limitation above** — this does NOT search the transcript-speaker index. |
+| `create_webhook` | Register a webhook for new-meeting events. **Not in the official MCP.** |
+| `delete_webhook` | Remove a webhook by ID. **Not in the official MCP.** |
 
 ## 🛠️ Development
 

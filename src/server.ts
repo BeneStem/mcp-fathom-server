@@ -11,7 +11,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { FathomClient } from './fathom-client.js';
 import { toolDefinitions, handleToolCall } from './tools/index.js';
-import { SERVER_NAME, SERVER_VERSION } from './constants.js';
+import { SERVER_NAME, SERVER_VERSION, SERVER_INSTRUCTIONS } from './constants.js';
 
 export function createServer(apiKey: string): Server {
   const fathomClient = new FathomClient(apiKey);
@@ -24,7 +24,8 @@ export function createServer(apiKey: string): Server {
       tools: {},
       resources: {},
       prompts: {}
-    }
+    },
+    instructions: SERVER_INSTRUCTIONS
   });
 
   server.setRequestHandler(ListToolsRequestSchema, async (_request: ListToolsRequest) => ({
