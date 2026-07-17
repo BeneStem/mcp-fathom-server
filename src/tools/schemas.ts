@@ -6,7 +6,7 @@ const calendarInviteesDomainsTypeSchema = z.enum(['all', 'only_internal', 'one_o
 const meetingFilterParams = {
   calendar_invitees: z.array(z.string()).optional().describe("Filter by attendee email addresses"),
   calendar_invitees_domains: z.array(z.string()).optional().describe("Filter by company domains (exact match)"),
-  calendar_invitees_domains_type: calendarInviteesDomainsTypeSchema.optional().describe("Filter by attendee type: all, only_internal, or one_or_more_external"),
+  calendar_invitees_domains_type: calendarInviteesDomainsTypeSchema.optional().describe("Classify meetings by whether the CALENDAR INVITEE list contains an external domain. NOT the meeting's semantic type (the title's category word) and NOT a Fathom meeting_type. Values: all (default), only_internal (every invitee shares the recorder's domain), one_or_more_external. Caveat: the API derives this from the full calendar invite, including participants not surfaced in calendar_invitees[]; a meeting whose visible invitees are all internal can still be one_or_more_external, so only_internal may drop meetings you consider internal. Omit unless you specifically want the internal/external split."),
   recorded_by: z.array(z.string()).optional().describe("Filter by meeting owner email addresses"),
   teams: z.array(z.string()).optional().describe("Filter by team names"),
 };
